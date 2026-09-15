@@ -20,14 +20,11 @@ with st.form("form_consulta"):
 def limpar_ncm(codigo):
     return "".join(filter(str.isdigit, codigo))
 
-def expandir_categorias(desc):
-    desc_lower = desc.lower()
-    termos = [desc]
-    if any(k in desc_lower for k in ["opms", "pinca", "pinça", "cirurgic", "medico", "médico"]):
-        termos.extend(["medico-hospitalar", "instrumental cirurgico", "ortese e protese"])
-    elif any(k in desc_lower for k in ["cimento", "implante", "protese", "prótese"]):
-        termos.extend(["material de osteossintese", "implante ortopedico"])
-    return termos
+def formatar_ncm(codigo):
+    digits = limpar_ncm(codigo)
+    if len(digits) == 8:
+        return f"{digits[:4]}.{digits[4:6]}.{digits[6:]}"
+    return codigo
 
 def extrair_fundamento_legal(texto):
     padroes = [
@@ -35,6 +32,7 @@ def extrair_fundamento_legal(texto):
         r"(?:Art(?:igo|\.)?\s*\d+º?[A-Z]?(?:\s+do\s+Anexo\s+[I|V|X]+)?)",
         r"(?:Decreto\s+n?º?\s*[\d\.]+)",
         r"(?:RICMS[^\.\,\;]+)",
+        r"(?:Isento[^\.\;]+)"
     ]
     encontrados = []
     for p in padroes:
@@ -49,39 +47,53 @@ if submetido:
         st.error("Por favor, preencha NCM, Descrição e UF obrigatoriamente.")
     else:
         ncm_limpo = limpar_ncm(ncm)
-        categorias = expandir_categorias(descricao)
+        ncm_formatado = formatar_ncm(ncm)
         
+        # Consultas simplificadas para evitar bloqueio e ampliar alcance
         queries = [
-            f'RICMS {uf} "Anexo I" "isenção" "{ncm_limpo}"',
-            f'site:confaz.fazenda.gov.br "Convênio ICMS" "{ncm_limpo}" "isenção"',
-            f'"{ncm_limpo}" "{categorias[0]}" ICMS {uf} "Artigo" "Isento"'
+            f'RICMS {uf} ICMS NCM {ncm_formatado} isenção',
+            f'RICMS {uf} ICMS NCM {ncm_limpo} isenção',
+            f'site:confaz.fazenda.gov.br NCM {ncm_formatado} ICMS',
+            f'NCM {ncm_formatado} {descricao} ICMS {uf} "Anexo I"'
         ]
+        
         if anvisa:
-            queries.append(f'ANVISA "{anvisa}" "{ncm_limpo}" ICMS {uf} isenção')
+            queries.append(f'ANVISA {anvisa} ICMS {uf} {ncm_limpo}')
 
-        st.info(f"Buscando enquadramento para NCM **{ncm_limpo}** na UF **{uf}**...")
+        st.info(f"Buscando enquadramento para NCM **{ncm_formatado}** na UF **{uf}**...")
         
         resultados = []
         vistos = set()
 
         with st.spinner("Varrendo regulamentos estaduais e convênios CONFAZ..."):
-            with DDGS() as ddgs:
-                for q in queries:
-                    try:
-                        for r in ddgs.text(q, max_results=3):
-                            url = r.get("href") or r.get("link") or ""
-                            if url and url not in vistos:
-                                vistos.add(url)
-                                tit = r.get("title", "")
-                                body = r.get("body", "")
-                                fundamentos = extrair_fundamento_legal(f"{tit} {body}")
-                                resultados.append({"titulo": tit, "url": url, "trecho": body, "fundamentos": fundamentos})
-                    except Exception:
-                        pass
-                    time.sleep(1)
+            try:
+                with DDGS() as ddgs:
+                    for q in queries:
+                        try:
+                            # Tenta buscar textos sem restrição rígida
+                            busca = ddgs.text(q, max_results=4)
+                            if busca:
+                                for r in busca:
+                                    url = r.get("href") or r.get("link") or ""
+                                    if url and url not in vistos:
+                                        vistos.add(url)
+                                        tit = r.get("title", "")
+                                        body = r.get("body", "")
+                                        fundamentos = extrair_fundamento_legal(f"{tit} {body}")
+                                        resultados.append({
+                                            "titulo": tit,
+                                            "url": url,
+                                            "trecho": body,
+                                            "fundamentos": fundamentos
+                                        })
+                        except Exception as e:
+                            pass
+                        time.sleep(1)
+            except Exception as main_err:
+                st.error("Ocorreu uma instabilidade na busca de dados na nuvem. Tente novamente em instantes.")
 
         if not resultados:
-            st.warning("Nenhuma norma explícita de isenção encontrada com os termos informados. Verifique se o NCM e a UF estão corretos.")
+            st.warning(f"Nenhum resultado direto retornado para a busca rápida do NCM {ncm_formatado}. Tente remover os pontos do NCM ou resumir a descrição.")
         else:
             st.success(f"Encontradas {len(resultados)} referências jurídicas e oficiais!")
             
