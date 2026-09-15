@@ -6,34 +6,34 @@ from duckduckgo_search import DDGS
 st.set_page_config(page_title="Radar Fiscal ICMS", page_icon="⚖️", layout="centered")
 
 st.title("⚖️ Consulta Fiscal de ICMS por Item")
-st.caption("Verificador de isenção, alíquotas e fundamentação legal por NCM e UF.")
+st.caption("Validador de Isenção (Convênio ICMS 01/99 / RICMS) por NCM, Descrição e ANVISA.")
 
-# Base interna consolidada (com foco principal no Convênio ICMS 01/99)
-REGRAS_FIXAS = {
-    "3006.40.20": {
-        "status": "ISENTO",
-        "convenio": "Convênio ICMS 01/99 (Item/Anexo correspondente)",
-        "fundamento_sp": "Artigo 14 do Anexo I do RICMS/SP (Decreto nº 45.490/2000)",
-        "descricao_legal": "Cimentos para recomposição óssea, próteses, órteses e implantes médico-hospitalares.",
-        "requisito": "Isenção condicionada ao atendimento dos requisitos do Convênio ICMS 01/99 (uso médico/hospitalar e registro sanitário ANVISA)."
-    },
-    "9018.90.99": {
-        "status": "VERIFICAR LISTA DO CONVÊNIO",
-        "convenio": "Convênio ICMS 01/99 ou Convênio ICMS 126/10",
-        "fundamento_sp": "Artigo 14 ou Artigo 16 do Anexo I do RICMS/SP",
-        "descricao_legal": "Instrumentos e aparelhos para medicina e cirurgia.",
-        "requisito": "Aplica-se a isenção se a descrição do item constar expressamente na relação anexa ao Convênio ICMS 01/99."
+# Dicionário de validação estrita por Descrição e NCM (Regras Oficiais)
+# A isenção só se aplica se a NCM E a Descrição baterem com o texto legal
+REGRAS_DESCRICAO = [
+    {
+        "ncm": "30064020",
+        "termos_isentos": ["cimento", "cimento osseo", "cimento para recomposicao"],
+        "termos_tributados": ["enxerto", "enxerto osseo", "matriz ossea", "substituto osseo"],
+        "convenio": "Convênio ICMS 01/99",
+        "fundamento_sp": "Artigo 14 do Anexo I do RICMS/SP",
+        "item_anexo": "Cimentos para recomposição óssea",
+        "obs": "O benefício do Conv. 01/99 é TAXATIVO. O 'Cimento Ósseo' é isento, mas 'Enxertos Ósseos' e substitutos biológicos sob a mesma NCM não constam na norma, sendo TRIBUTADOS INTEGRALMENTE."
     }
-}
+]
 
 # Entradas do Usuário
 with st.form("form_consulta"):
     ncm = st.text_input("1. Código NCM (ex: 3006.40.20 ou 9018.90.99)", placeholder="Apenas números ou formatado").strip()
-    descricao = st.text_input("2. Descrição Comercial (ex: Cimento Ósseo / Pinça OPMS)", placeholder="Nome do item").strip()
+    descricao = st.text_input("2. Descrição Comercial do Item (Obrigatório)", placeholder="Ex: Enxerto Ósseo / Cimento Ósseo / Pinça OPMS").strip()
     anvisa = st.text_input("3. Registro ANVISA (Opcional)", placeholder="Número do registro sanitário").strip()
-    uf = st.text_input("4. UF de Destino/Operação (ex: SP, MG, RJ)", max_chars=2).strip().upper()
+    uf = st.text_input("4. UF de Operação (ex: SP, MG, RJ)", max_chars=2).strip().upper()
     
     submetido = st.form_submit_button("🔍 Consultar Tributação e Base Legal")
+
+def limpar_texto(txt):
+    txt_limpo = re.sub(r'[^\w\s]', '', txt.lower())
+    return " ".join(txt_limpo.split())
 
 def limpar_ncm(codigo):
     return "".join(filter(str.isdigit, codigo))
@@ -50,8 +50,7 @@ def extrair_fundamento_legal(texto):
         r"(?:Convênio\s+ICMS\s+n?º?\s*\d+/\d+)",
         r"(?:Art(?:igo|\.)?\s*\d+º?[A-Z]?(?:\s+do\s+Anexo\s+[I|V|X]+)?)",
         r"(?:Decreto\s+n?º?\s*[\d\.]+)",
-        r"(?:RICMS[^\.\,\;\n]+)",
-        r"(?:Isent[o|a][^\.\;\n]+)"
+        r"(?:RICMS[^\.\,\;\n]+)"
     ]
     encontrados = []
     for p in padroes:
@@ -67,30 +66,45 @@ if submetido:
     else:
         ncm_limpo = limpar_ncm(ncm)
         ncm_formatado = formatar_ncm(ncm)
+        desc_limpa = limpar_texto(descricao)
         
-        # 1. Checagem direta na regra interna com validação do Convênio 01/99
-        if ncm_formatado in REGRAS_FIXAS:
-            regra = REGRAS_FIXAS[ncm_formatado]
-            st.success(f"✅ Enquadramento Localizado pelo Convênio ICMS 01/99!")
+        enquadramento_encontrado = False
+
+        # 1. Análise Estrita: Cruzamento NCM + Descrição Comercial
+        for regra in REGRAS_DESCRICAO:
+            if regra["ncm"] == ncm_limpo:
+                # Checa se a descrição bate com termos TRIBUTADOS (Exclusões da Isenção)
+                if any(termo in desc_limpa for termo in regra["termos_tributados"]):
+                    enquadramento_encontrado = True
+                    st.error(f"❌ **PRODUTO TRIBUTADO INTEGRALMENTE ({uf})**")
+                    st.markdown(f"**Item Consultado:** `{descricao}` | **NCM:** `{ncm_formatado}`")
+                    st.warning(f"⚠️ **Motivo:** {regra['obs']}")
+                    st.markdown(f"**Base Comparativa:** O `{regra['convenio']}` ({regra['fundamento_sp']}) concede isenção **apenas** para *'{regra['item_anexo']}'*.")
+                    break
+                
+                # Checa se a descrição bate com termos ISENTOS
+                elif any(termo in desc_limpa for termo in regra["termos_isentos"]):
+                    enquadramento_encontrado = True
+                    st.success(f"✅ **PRODUTO ISENTO DE ICMS ({uf})**")
+                    st.markdown(f"**Base Legal:** `{regra['convenio']}` | `{regra['fundamento_sp']}`")
+                    st.markdown(f"**Descrição no Anexo:** *{regra['item_anexo']}*")
+                    if anvisa:
+                        st.info(f"📋 **ANVISA Informado:** `{anvisa}` — Requisito do Convênio preenchido.")
+                    else:
+                        st.warning("⚠️ **Atenção:** A isenção exige registro regular na ANVISA para fins hospitalares.")
+                    break
+
+        # 2. Se for um NCM/Descrição genérico fora da regra fixa, consulta Web Avançada
+        if not enquadramento_encontrado:
+            st.info(f"Consultando bases do CONFAZ e RICMS/{uf} para a descrição **'{descricao}'** na NCM **{ncm_formatado}**...")
             
-            st.markdown(f"### Status: **{regra['status']}**")
-            st.markdown(f"**Norma Nacional:** `{regra['convenio']}`")
-            if uf == "SP":
-                st.markdown(f"**Regulamento Estadual (SP):** `{regra['fundamento_sp']}`")
-            st.markdown(f"**Descrição Legal:** {regra['descricao_legal']}")
-            st.info(f"📌 **Requisito do Convênio 01/99:** {regra['requisito']}")
-            
-        else:
-            # 2. Busca na Web priorizando a consulta ao Convênio 01/99 e RICMS da UF
+            # Busca rigorosa exigindo o NCM E a Descrição exata do produto
             queries = [
-                f'"Convênio ICMS 01/99" "{ncm_formatado}" isenção',
-                f'"Convênio ICMS 1/99" "{ncm_formatado}"',
-                f'RICMS {uf} NCM "{ncm_formatado}" "Anexo I" isenção',
-                f'site:confaz.fazenda.gov.br "{ncm_formatado}" "01/99"',
-                f'site:legisweb.com.br ICMS {uf} NCM "{ncm_formatado}" isenção'
+                f'"Convênio ICMS 01/99" "{ncm_formatado}" "{descricao}"',
+                f'RICMS {uf} "{ncm_formatado}" "{descricao}" "Anexo I"',
+                f'site:confaz.fazenda.gov.br "{ncm_formatado}" "{descricao}"',
+                f'site:legisweb.com.br ICMS {uf} "{ncm_formatado}" "{descricao}"'
             ]
-            
-            st.info(f"Consultando varredura para NCM **{ncm_formatado}** na UF **{uf}** com foco no Convênio ICMS 01/99...")
             
             resultados = []
             vistos = set()
@@ -100,12 +114,12 @@ if submetido:
                 "contabeis.com.br", "jusbrasil.com.br", "itarget.com.br"
             ]
 
-            with st.spinner("Buscando na base do CONFAZ e RICMS estaduais..."):
+            with st.spinner("Analisando amparo legal..."):
                 try:
                     with DDGS() as ddgs:
                         for q in queries:
                             try:
-                                busca = ddgs.text(q, region="br-pt", max_results=5)
+                                busca = ddgs.text(q, region="br-pt", max_results=4)
                                 if busca:
                                     for r in busca:
                                         url = r.get("href") or r.get("link") or ""
@@ -124,21 +138,20 @@ if submetido:
                                 pass
                             time.sleep(1)
                 except Exception:
-                    st.error("Instabilidade na consulta externa.")
+                    st.error("Erro na busca de apoio.")
 
             if not resultados:
-                st.warning(f"Não foram encontradas menções explícitas ao Convênio ICMS 01/99 para o NCM {ncm_formatado}. Confirme se o item se enquadra em outro convênio hospitalar (ex: Convênio 126/10 ou 52/91).")
+                st.warning(f"⚠️ **Não foi localizada Isenção Explicita para '{descricao}' (NCM {ncm_formatado}).**\n\nPor regra geral do CTN (Art. 111 - interpretação literal), itens que não constam com a descrição exata nos anexos do Convênio 01/99 ou RICMS/{uf} devem ser **TRIBUTADOS INTEGRALMENTE**.")
             else:
-                st.success(f"Encontradas {len(resultados)} referências jurídicas e oficiais!")
-                
+                st.success(f"Encontradas {len(resultados)} referências jurídicas para análise:")
                 for res in resultados:
                     with st.expander(f"📌 {res['titulo']}", expanded=True):
                         st.write(f"**Link Oficial:** [{res['url']}]({res['url']})")
                         if res['fundamentos']:
-                            st.markdown("**Base Legal Identificada:**")
+                            st.markdown("**Fundamentos Localizados:**")
                             for f in res['fundamentos']:
                                 st.markdown(f"- `👉 {f}`")
                         st.write(f"**Trecho da Norma:** {res['trecho']}")
 
         st.divider()
-        st.caption("⚠️ **Lembrete de Especialista:** Para aplicação do Convênio ICMS 01/99 (Art. 111 do CTN), verifique rigorosamente se a descrição do item na Nota Fiscal corresponde exatamente à lista do CONFAZ e se há o Registro ANVISA correspondente.")
+        st.caption("⚠️ **Análise Fiscal:** A isenção de ICMS é de interpretação estrita (Art. 111 do CTN). Havendo divergência entre a descrição comercial e o texto da lei, prevalece a tributação integral.")
